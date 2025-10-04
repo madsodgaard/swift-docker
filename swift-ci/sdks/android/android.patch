@@ -1,0 +1,301 @@
+diff --git a/include/swift/AST/PlatformKinds.def b/include/swift/AST/PlatformKinds.def
+index 9b2fcdadd55..885bd81c168 100644
+--- a/include/swift/AST/PlatformKinds.def
++++ b/include/swift/AST/PlatformKinds.def
+@@ -37,5 +37,6 @@ AVAILABILITY_PLATFORM(macCatalystApplicationExtension, "application extensions f
+ AVAILABILITY_PLATFORM(FreeBSD, "FreeBSD")
+ AVAILABILITY_PLATFORM(OpenBSD, "OpenBSD")
+ AVAILABILITY_PLATFORM(Windows, "Windows")
++AVAILABILITY_PLATFORM(Android, "Android")
+ 
+ #undef AVAILABILITY_PLATFORM
+diff --git a/lib/AST/PlatformKindUtils.cpp b/lib/AST/PlatformKindUtils.cpp
+index e54e6be019b..af8345c1ee4 100644
+--- a/lib/AST/PlatformKindUtils.cpp
++++ b/lib/AST/PlatformKindUtils.cpp
+@@ -118,6 +118,7 @@ swift::basePlatformForExtensionPlatform(PlatformKind Platform) {
+   case PlatformKind::FreeBSD:
+   case PlatformKind::OpenBSD:
+   case PlatformKind::Windows:
++  case PlatformKind::Android:
+   case PlatformKind::none:
+     return std::nullopt;
+   }
+@@ -164,6 +165,8 @@ static bool isPlatformActiveForTarget(PlatformKind Platform,
+       return Target.isOSFreeBSD();
+     case PlatformKind::Windows:
+       return Target.isOSWindows();
++    case PlatformKind::Android:
++      return Target.isAndroid();
+     case PlatformKind::none:
+       llvm_unreachable("handled above");
+   }
+@@ -291,6 +294,8 @@ swift::tripleOSTypeForPlatform(PlatformKind platform) {
+     return llvm::Triple::OpenBSD;
+   case PlatformKind::Windows:
+     return llvm::Triple::Win32;
++  case PlatformKind::Android:
++    return llvm::Triple::Linux;
+   case PlatformKind::none:
+     return std::nullopt;
+   }
+@@ -326,6 +331,7 @@ bool swift::isPlatformSPI(PlatformKind Platform) {
+   case PlatformKind::OpenBSD:
+   case PlatformKind::FreeBSD:
+   case PlatformKind::Windows:
++  case PlatformKind::Android:
+   case PlatformKind::none:
+     return false;
+   }
+diff --git a/lib/Basic/Platform.cpp b/lib/Basic/Platform.cpp
+index 8060efeab0d..f3fd50f7c62 100644
+--- a/lib/Basic/Platform.cpp
++++ b/lib/Basic/Platform.cpp
+@@ -300,6 +300,8 @@ llvm::VersionTuple swift::getVersionForTriple(const llvm::Triple &triple) {
+     return triple.getOSVersion();
+   } else if (triple.isOSWindows()) {
+     return triple.getOSVersion();
++  } else if (triple.isAndroid()) {
++    return triple.getEnvironmentVersion();
+   }
+   return llvm::VersionTuple(/*Major=*/0, /*Minor=*/0, /*Subminor=*/0);
+ }
+diff --git a/lib/ClangImporter/ClangImporter.cpp b/lib/ClangImporter/ClangImporter.cpp
+index 2841cef11c3..2ca0375f36f 100644
+--- a/lib/ClangImporter/ClangImporter.cpp
++++ b/lib/ClangImporter/ClangImporter.cpp
+@@ -665,6 +665,12 @@ void importer::getNormalInvocationArguments(
+       });
+     }
+ 
++    if (triple.isAndroid()) {
++      invocationArgStrs.insert(invocationArgStrs.end(), {
++        "-D__ANDROID_UNAVAILABLE_SYMBOLS_ARE_WEAK__",
++      });
++    }
++
+     if (triple.isOSWindows()) {
+       switch (triple.getArch()) {
+       default: llvm_unreachable("unsupported Windows architecture");
+@@ -2577,6 +2583,10 @@ PlatformAvailability::PlatformAvailability(const LangOptions &langOpts)
+     deprecatedAsUnavailableMessage = "";
+     break;
+ 
++  case PlatformKind::Android:
++    deprecatedAsUnavailableMessage = "";
++    break;
++
+   case PlatformKind::none:
+     break;
+   }
+@@ -2625,6 +2635,9 @@ bool PlatformAvailability::isPlatformRelevant(StringRef name) const {
+   case PlatformKind::Windows:
+     return name == "windows";
+ 
++  case PlatformKind::Android:
++    return name == "android";
++
+   case PlatformKind::none:
+     return false;
+   }
+@@ -2701,6 +2714,10 @@ bool PlatformAvailability::treatDeprecatedAsUnavailable(
+   case PlatformKind::Windows:
+     // No deprecation filter on Windows
+     return false;
++
++  case PlatformKind::Android:
++    // The minimum Android API level supported by Swift is 21
++    return major <= 20;
+   }
+ 
+   llvm_unreachable("Unexpected platform");
+diff --git a/lib/ClangImporter/ImportDecl.cpp b/lib/ClangImporter/ImportDecl.cpp
+index f5c84f1869e..cfd54156f89 100644
+--- a/lib/ClangImporter/ImportDecl.cpp
++++ b/lib/ClangImporter/ImportDecl.cpp
+@@ -9792,6 +9792,7 @@ void ClangImporter::Implementation::importAttributes(
+                     PlatformKind::watchOSApplicationExtension)
+               .Case("xros_app_extension",
+                     PlatformKind::visionOSApplicationExtension)
++              .Case("android", PlatformKind::Android)
+               .Default(std::nullopt);
+       if (!platformK)
+         continue;
+diff --git a/lib/IRGen/TBDGen.cpp b/lib/IRGen/TBDGen.cpp
+index 5512e5062e0..5fcb78af93c 100644
+--- a/lib/IRGen/TBDGen.cpp
++++ b/lib/IRGen/TBDGen.cpp
+@@ -251,6 +251,8 @@ getLinkerPlatformId(OriginallyDefinedInAttr::ActiveVersion Ver,
+     llvm_unreachable("not used for this platform");
+   case swift::PlatformKind::Windows:
+     llvm_unreachable("not used for this platform");
++  case swift::PlatformKind::Android:
++    llvm_unreachable("not used for this platform");
+   case swift::PlatformKind::iOS:
+   case swift::PlatformKind::iOSApplicationExtension:
+     if (target && target->isMacCatalystEnvironment())
+diff --git a/lib/PrintAsClang/DeclAndTypePrinter.cpp b/lib/PrintAsClang/DeclAndTypePrinter.cpp
+index ea84364f604..868238a4e8d 100644
+--- a/lib/PrintAsClang/DeclAndTypePrinter.cpp
++++ b/lib/PrintAsClang/DeclAndTypePrinter.cpp
+@@ -1830,6 +1830,9 @@ public:
+       case PlatformKind::Windows:
+         plat = "windows";
+         break;
++      case PlatformKind::Android:
++        plat = "android";
++        break;
+       case PlatformKind::none:
+         llvm_unreachable("handled above");
+       }
+diff --git a/lib/SymbolGraphGen/AvailabilityMixin.cpp b/lib/SymbolGraphGen/AvailabilityMixin.cpp
+index 4678641bf15..6da42c72e55 100644
+--- a/lib/SymbolGraphGen/AvailabilityMixin.cpp
++++ b/lib/SymbolGraphGen/AvailabilityMixin.cpp
+@@ -60,6 +60,8 @@ StringRef getDomain(const SemanticAvailableAttr &AvAttr) {
+       return { "OpenBSD" };
+     case swift::PlatformKind::Windows:
+       return { "Windows" };
++    case swift::PlatformKind::Android:
++      return { "Android" };
+     case swift::PlatformKind::none:
+       return { "*" };
+   }
+diff --git a/stdlib/public/core/Availability.swift b/stdlib/public/core/Availability.swift
+index 08880a2ee57..0fd92086e96 100644
+--- a/stdlib/public/core/Availability.swift
++++ b/stdlib/public/core/Availability.swift
+@@ -75,7 +75,7 @@ public func _stdlib_isOSVersionAtLeast_AEIC(
+   _ minor: Builtin.Word,
+   _ patch: Builtin.Word
+ ) -> Builtin.Int1 {
+-#if (os(macOS) || os(iOS) || os(tvOS) || os(watchOS) || os(visionOS)) && SWIFT_RUNTIME_OS_VERSIONING
++#if (os(macOS) || os(iOS) || os(tvOS) || os(watchOS) || os(visionOS) || os(Android)) && SWIFT_RUNTIME_OS_VERSIONING
+   if Int(major) == 9999 {
+     return true._value
+   }
+diff --git a/test/ClangImporter/Inputs/custom-modules/AndroidVersioning.h b/test/ClangImporter/Inputs/custom-modules/AndroidVersioning.h
+new file mode 100644
+index 00000000000..70956605a9b
+--- /dev/null
++++ b/test/ClangImporter/Inputs/custom-modules/AndroidVersioning.h
+@@ -0,0 +1,5 @@
++import <android/versioning.h>
++
++void FunctionIntroducedIn24() __INTRODUCED_IN(24);
++void FunctionIntroducedIn28() __INTRODUCED_IN(28);
++
+diff --git a/test/ClangImporter/android-sdk-macros.swift b/test/ClangImporter/android-sdk-macros.swift
+new file mode 100644
+index 00000000000..3eee516879a
+--- /dev/null
++++ b/test/ClangImporter/android-sdk-macros.swift
+@@ -0,0 +1,4 @@
++// RUN: %swift -target aarch64-unknown-linux-android28 -typecheck %s -parse-stdlib -dump-clang-diagnostics 2>&1 | %FileCheck %s -check-prefix CHECK-WEAK-SYMBOLS
++
++// CHECK-WEAK-SYMBOLS: -D__ANDROID_UNAVAILABLE_SYMBOLS_ARE_WEAK__
++
+diff --git a/test/ClangImporter/availability_android.swift b/test/ClangImporter/availability_android.swift
+new file mode 100644
+index 00000000000..986bf8eb4f4
+--- /dev/null
++++ b/test/ClangImporter/availability_android.swift
+@@ -0,0 +1,11 @@
++// RUN: %target-swift-frontend(mock-sdk: %clang-importer-sdk) -typecheck -verify -I %S/Inputs/custom-modules -verify-ignore-unknown -target aarch64-unknown-linux-android24 %s
++
++// REQUIRES: OS=linux-android ||  OS=linux-androideabi
++
++import AndroidVersioning
++
++FunctionIntroducedIn24()
++
++FunctionIntroducedIn28()
++// expected-error@-1 {{'FunctionIntroducedIn28()' is only available in Android 28 or newer}}
++// expected-note@-2 {{add 'if #available' version check}}
+diff --git a/test/attr/attr_availability_android.swift b/test/attr/attr_availability_android.swift
+new file mode 100644
+index 00000000000..560c361a1cb
+--- /dev/null
++++ b/test/attr/attr_availability_android.swift
+@@ -0,0 +1,59 @@
++// RUN: %swift -typecheck -verify -parse-stdlib -target aarch64-unknown-linux-android28 %s
++
++@available(Android, introduced: 1.0, deprecated: 2.0, obsoleted: 28.0,
++              message: "you don't want to do that anyway")
++func doSomething() { }
++// expected-note @-1{{'doSomething()' was obsoleted in Android 28.0}}
++
++doSomething() // expected-error{{'doSomething()' is unavailable in Android: you don't want to do that anyway}}
++
++// Preservation of major.minor.micro
++@available(Android, introduced: 1.0, deprecated: 2.0, obsoleted: 27.0)
++func doSomethingElse() { }
++// expected-note @-1{{'doSomethingElse()' was obsoleted in Android 27.0}}
++
++doSomethingElse() // expected-error{{'doSomethingElse()' is unavailable in Android}}
++
++// Test deprecations in 28.0 and later
++
++@available(Android, introduced: 1.1, deprecated: 28.0,
++              message: "Use another function")
++func deprecatedFunctionWithMessage() { }
++
++deprecatedFunctionWithMessage() // expected-warning{{'deprecatedFunctionWithMessage()' was deprecated in Android 28.0: Use another function}}
++
++
++@available(Android, introduced: 1.0, deprecated: 28.0)
++func deprecatedFunctionWithoutMessage() { }
++
++deprecatedFunctionWithoutMessage() // expected-warning{{'deprecatedFunctionWithoutMessage()' was deprecated in Android 28.0}}
++
++@available(Android, introduced: 1.0, deprecated: 28.0,
++              message: "Use BetterClass instead")
++class DeprecatedClass { }
++
++func functionWithDeprecatedParameter(p: DeprecatedClass) { } // expected-warning{{'DeprecatedClass' was deprecated in Android 28.0: Use BetterClass instead}}
++
++@available(tvOS, introduced: 7.0, deprecated: 29,
++              message: "Use BetterClass instead")
++class DeprecatedClassIn29_0 { }
++
++// Elements deprecated later than the minimum deployment target (which is 28.0, in this case) should not generate warnings
++func functionWithDeprecatedLaterParameter(p: DeprecatedClassIn29_0) { }
++
++@available(Android, introduced: 30)
++func functionIntroducedOnAndroid30() { }
++
++if #available(iOS 17.3, *) {
++  functionIntroducedOnAndroid30() // expected-error{{'functionIntroducedOnAndroid30()' is only available in Android 30 or newer}}
++  // expected-note @-1{{add 'if #available' version check}}{{3-34=if #available(Android 30, *) {\n      functionIntroducedOnAndroid30()\n  \} else {\n      // Fallback on earlier versions\n  \}}}
++}
++
++if #available(Android 28, *) {
++  functionIntroducedOnAndroid30() // expected-error{{'functionIntroducedOnAndroid30()' is only available in Android 30 or newer}}
++  // expected-note @-1{{add 'if #available' version check}}{{3-34=if #available(Android 30, *) {\n      functionIntroducedOnAndroid30()\n  \} else {\n      // Fallback on earlier versions\n  \}}}
++}
++
++if #available(Android 30, *) {
++  functionIntroducedOnAndroid30()
++}
+diff --git a/tools/SourceKit/lib/SwiftLang/SwiftDocSupport.cpp b/tools/SourceKit/lib/SwiftLang/SwiftDocSupport.cpp
+index c5d2c5f3b26..211f88ff38b 100644
+--- a/tools/SourceKit/lib/SwiftLang/SwiftDocSupport.cpp
++++ b/tools/SourceKit/lib/SwiftLang/SwiftDocSupport.cpp
+@@ -688,6 +688,7 @@ static void reportAvailabilityAttributes(ASTContext &Ctx, const Decl *D,
+   static UIdent PlatformFreeBSD("source.availability.platform.freebsd");
+   static UIdent PlatformOpenBSD("source.availability.platform.openbsd");
+   static UIdent PlatformWindows("source.availability.platform.windows");
++  static UIdent PlatformAndroid("source.availability.platform.android");
+   std::vector<SemanticAvailableAttr> Scratch;
+ 
+   for (auto Attr : getAvailableAttrs(D, Scratch)) {
+@@ -743,6 +744,9 @@ static void reportAvailabilityAttributes(ASTContext &Ctx, const Decl *D,
+     case PlatformKind::Windows:
+       PlatformUID = PlatformWindows;
+       break;
++    case PlatformKind::Android:
++      PlatformUID = PlatformAndroid;
++      break;
+     }
+     // FIXME: [availability] Handle other availability domains?
+ 

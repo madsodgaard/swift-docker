@@ -1,13 +1,14 @@
 # swift-docker
 
+.
+
 <img src="https://swift.org/assets/images/swift.svg" alt="Swift logo" height="70" >
 
 ### Docker images for [Swift](https://swift.org).
 
-#### You can find the Docker Hub repo here: [https://hub.docker.com/_/swift/](https://hub.docker.com/_/swift/)
+#### You can find the Docker Hub repo here: [https://hub.docker.com/\_/swift/](https://hub.docker.com/_/swift/)
 
 #### Nightly image tags are published here: [https://hub.docker.com/r/swiftlang/swift](https://hub.docker.com/r/swiftlang/swift)
-
 
 ### Usage
 
@@ -49,7 +50,8 @@ COPY --from=builder /root .
 CMD [".build/release/docker-test"]
 ```
 
-## Contributing 
+## Contributing
+
 Welcome to the Swift community!
 
 Contributions to swift-docker are welcomed and encouraged! Please see the [Contributing to Swift guide](swift.org/contributing) and check out the [structure of the community](https://www.swift.org/community/#community-structure).
