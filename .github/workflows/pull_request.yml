@@ -29,7 +29,7 @@ jobs:
        matrix:
          include:
            #- swift-version: 'tag:swift-DEVELOPMENT-SNAPSHOT-2025-09-29-a'
-           - swift-version: 'branch:main'
+           - swift-version: 'scheme:main'
              build-type: 'local'
              build-compiler: '1'
              runner: 'ubuntu-24.04'
